@@ -58,3 +58,9 @@ Test and lint:
 cargo test
 cargo clippy --all-targets -- -D warnings
 ```
+
+## License
+
+MIT License - Copyright (c) 2026 Antonio Ognio
+
+Made with ❤️ from 🇵🇪. El Perú es clave 🔑.
