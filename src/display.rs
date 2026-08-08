@@ -32,13 +32,19 @@ pub struct DisplayConfig {
     pub ascii_format: AsciiFormat,
     pub terminal_width: Option<usize>,
     pub long_paths: bool,
+    pub folder_wrap: bool,
 }
 
 impl DisplayConfig {
-    pub fn new(ascii_format: Option<AsciiFormat>, monochrome: bool, long_paths: bool) -> Self {
+    pub fn new(
+        ascii_format: Option<AsciiFormat>,
+        monochrome: bool,
+        long_paths: bool,
+        folder_wrap: bool,
+    ) -> Self {
         let caps = TerminalCapabilities::detect();
 
-        Self::from_capabilities(caps, ascii_format, monochrome, long_paths)
+        Self::from_capabilities(caps, ascii_format, monochrome, long_paths, folder_wrap)
     }
 
     fn from_capabilities(
@@ -46,6 +52,7 @@ impl DisplayConfig {
         ascii_format: Option<AsciiFormat>,
         monochrome: bool,
         long_paths: bool,
+        folder_wrap: bool,
     ) -> Self {
         let force_ascii = ascii_format.is_some();
         let ascii_format = ascii_format.unwrap_or_else(|| auto_ascii_format(&caps));
@@ -66,6 +73,7 @@ impl DisplayConfig {
             ascii_format,
             terminal_width: caps.width.map(usize::from),
             long_paths,
+            folder_wrap,
         }
     }
 
@@ -81,6 +89,7 @@ impl DisplayConfig {
             ascii_format: AsciiFormat::Compact,
             terminal_width: Some(120),
             long_paths: false,
+            folder_wrap: false,
         }
     }
 
@@ -92,6 +101,7 @@ impl DisplayConfig {
             ascii_format,
             terminal_width: Some(120),
             long_paths: false,
+            folder_wrap: false,
         }
     }
 }
@@ -110,7 +120,7 @@ fn auto_ascii_format(caps: &TerminalCapabilities) -> AsciiFormat {
 
 impl Default for DisplayConfig {
     fn default() -> Self {
-        Self::new(None, false, false)
+        Self::new(None, false, false, false)
     }
 }
 
@@ -130,19 +140,24 @@ pub fn render_table(entries: &[PathEntry], config: &DisplayConfig) -> String {
     let rows = collect_display_rows(entries, SystemTime::now());
 
     match config.ascii_format {
-        AsciiFormat::Compact => render_ascii_compact(&rows, &config.style),
-        AsciiFormat::Narrow => render_ascii_narrow(&rows, &config.style),
-        AsciiFormat::Minimal => render_ascii_minimal(&rows),
+        AsciiFormat::Compact => render_ascii_compact(&rows, config),
+        AsciiFormat::Narrow => render_ascii_narrow(&rows, config),
+        AsciiFormat::Minimal => render_ascii_minimal(&rows, config),
     }
 }
 
 fn render_unicode_table(entries: &[PathEntry], config: &DisplayConfig) -> String {
     let rows = collect_unicode_rows(entries);
-    let widths = unicode_column_widths(&rows, config.terminal_width, config.long_paths);
+    let widths = unicode_column_widths(
+        &rows,
+        config.terminal_width,
+        config.long_paths,
+        config.folder_wrap,
+    );
     let rows = rows
         .into_iter()
         .map(|mut row| {
-            if !config.long_paths {
+            if !config.long_paths && !config.folder_wrap {
                 row.path = truncate_to_width(&row.path, widths[2]);
             }
             row
@@ -161,15 +176,19 @@ fn render_unicode_table(entries: &[PathEntry], config: &DisplayConfig) -> String
     push_unicode_rule(&mut output, &widths, '├', '┼', '┤');
 
     for row in rows {
-        push_unicode_row(
-            &mut output,
-            &row.cells(),
-            &widths,
-            &config.style,
-            RowStyle::Data {
-                problem: row.problem,
-            },
-        );
+        if config.folder_wrap {
+            push_wrapped_unicode_row(&mut output, &row, &widths, &config.style);
+        } else {
+            push_unicode_row(
+                &mut output,
+                &row.cells(),
+                &widths,
+                &config.style,
+                RowStyle::Data {
+                    problem: row.problem,
+                },
+            );
+        }
     }
 
     push_unicode_rule(&mut output, &widths, '╰', '┴', '╯');
@@ -228,6 +247,7 @@ fn unicode_column_widths(
     rows: &[UnicodeRow],
     terminal_width: Option<usize>,
     long_paths: bool,
+    folder_wrap: bool,
 ) -> [usize; 9] {
     let mut widths = std::array::from_fn(|index| UNICODE_COLUMNS[index].header.chars().count());
 
@@ -237,7 +257,7 @@ fn unicode_column_widths(
         }
     }
 
-    if !long_paths {
+    if !long_paths || folder_wrap {
         let target_width = terminal_width.unwrap_or(MAX_UNICODE_TABLE_WIDTH);
         let table_width = unicode_table_width(&widths);
 
@@ -295,6 +315,39 @@ fn push_unicode_row(
     output.push('\n');
 }
 
+fn push_wrapped_unicode_row(
+    output: &mut String,
+    row: &UnicodeRow,
+    widths: &[usize; 9],
+    style: &Style,
+) {
+    let path_lines = wrap_path_by_folder(&row.path, widths[2]);
+    let row_style = RowStyle::Data {
+        problem: row.problem,
+    };
+
+    for (line_index, path_line) in path_lines.iter().enumerate() {
+        let is_last_line = line_index == path_lines.len() - 1;
+        let cells = if is_last_line {
+            [
+                row.index.as_str(),
+                row.ok.as_str(),
+                path_line.as_str(),
+                row.entry_type.as_str(),
+                row.binaries.as_str(),
+                row.non_binary.as_str(),
+                row.size.as_str(),
+                row.modified.as_str(),
+                row.duplicate.as_str(),
+            ]
+        } else {
+            ["", "", path_line.as_str(), "", "", "", "", "", ""]
+        };
+
+        push_unicode_row(output, &cells, widths, style, row_style);
+    }
+}
+
 #[derive(Clone, Copy)]
 enum RowStyle {
     Header,
@@ -302,6 +355,10 @@ enum RowStyle {
 }
 
 fn style_unicode_cell(cell: &str, index: usize, style: &Style, row_style: RowStyle) -> String {
+    if cell.trim().is_empty() {
+        return cell.to_string();
+    }
+
     match row_style {
         RowStyle::Header => style.cyan(cell),
         RowStyle::Data { problem: _ } if index == 0 => style.yellow(cell),
@@ -366,6 +423,70 @@ fn truncate_to_width(value: &str, width: usize) -> String {
     let mut truncated = value.chars().take(kept).collect::<String>();
     truncated.push('…');
     truncated
+}
+
+fn wrap_path_by_folder(path: &str, width: usize) -> Vec<String> {
+    if path.is_empty() {
+        return vec![String::new()];
+    }
+
+    if width == 0 {
+        return vec![path.to_string()];
+    }
+
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for component in folder_components(path) {
+        let candidate_len = current.chars().count() + component.chars().count();
+
+        if !current.is_empty() && candidate_len > width {
+            lines.push(current);
+            current = component;
+        } else {
+            current.push_str(&component);
+        }
+    }
+
+    if !current.is_empty() {
+        lines.push(current);
+    }
+
+    if lines.is_empty() {
+        lines.push(path.to_string());
+    }
+
+    lines
+}
+
+fn folder_components(path: &str) -> Vec<String> {
+    if path == "/" {
+        return vec!["/".to_string()];
+    }
+
+    let mut components = Vec::new();
+
+    if path.starts_with('/') {
+        components.push("/".to_string());
+    }
+
+    let mut parts = path.split('/').filter(|part| !part.is_empty()).peekable();
+
+    while let Some(part) = parts.next() {
+        let mut component = part.to_string();
+
+        if parts.peek().is_some() || path.ends_with('/') {
+            component.push('/');
+        }
+
+        components.push(component);
+    }
+
+    if components.is_empty() {
+        components.push(path.to_string());
+    }
+
+    components
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -473,13 +594,22 @@ fn format_ascii_age(age: Duration, suffix: &str) -> String {
     format!("{value} {unit}{plural} {suffix}")
 }
 
-fn render_ascii_compact(rows: &[DisplayRow], style: &Style) -> String {
-    let widths = [
+fn render_ascii_compact(rows: &[DisplayRow], config: &DisplayConfig) -> String {
+    let mut widths = [
         column_width(" #", rows.iter().map(|row| row.index.as_str())),
         column_width("Name", rows.iter().map(|row| row.name.as_str())),
         column_width("Size", rows.iter().map(|row| row.size.as_str())),
         column_width("Modified", rows.iter().map(|row| row.modified.as_str())),
     ];
+
+    if config.folder_wrap {
+        widths[1] = capped_ascii_name_width(
+            config.terminal_width,
+            widths[1],
+            &[widths[0], widths[2], widths[3]],
+            13,
+        );
+    }
 
     let mut output = String::new();
 
@@ -488,25 +618,47 @@ fn render_ascii_compact(rows: &[DisplayRow], style: &Style) -> String {
         &mut output,
         &["#", "Name", "Size", "Modified"],
         &widths,
-        style,
+        &config.style,
         RowStyle::Header,
     );
     push_compact_rule(&mut output, &widths);
 
     for row in rows {
-        push_compact_row(
-            &mut output,
-            &[&row.index, &row.name, &row.size, &row.modified],
-            &widths,
-            style,
-            RowStyle::Data {
-                problem: row.problem,
-            },
-        );
+        if config.folder_wrap {
+            push_wrapped_compact_row(&mut output, row, &widths, &config.style);
+        } else {
+            push_compact_row(
+                &mut output,
+                &[&row.index, &row.name, &row.size, &row.modified],
+                &widths,
+                &config.style,
+                RowStyle::Data {
+                    problem: row.problem,
+                },
+            );
+        }
     }
 
     push_compact_rule(&mut output, &widths);
     trim_final_newline(output)
+}
+
+fn capped_ascii_name_width(
+    terminal_width: Option<usize>,
+    current_name_width: usize,
+    other_widths: &[usize],
+    fixed_width: usize,
+) -> usize {
+    let target_width = terminal_width.unwrap_or(MAX_UNICODE_TABLE_WIDTH);
+    let other_width = other_widths.iter().sum::<usize>() + fixed_width;
+
+    if target_width <= other_width + MIN_PATH_WIDTH {
+        return MIN_PATH_WIDTH.min(current_name_width.max(MIN_PATH_WIDTH));
+    }
+
+    current_name_width
+        .min(target_width - other_width)
+        .max(MIN_PATH_WIDTH)
 }
 
 fn push_compact_rule(output: &mut String, widths: &[usize; 4]) {
@@ -543,12 +695,45 @@ fn push_compact_row(
     output.push('\n');
 }
 
-fn render_ascii_narrow(rows: &[DisplayRow], style: &Style) -> String {
-    let widths = [
+fn push_wrapped_compact_row(
+    output: &mut String,
+    row: &DisplayRow,
+    widths: &[usize; 4],
+    style: &Style,
+) {
+    let name_lines = wrap_path_by_folder(&row.name, widths[1]);
+    let row_style = RowStyle::Data {
+        problem: row.problem,
+    };
+
+    for (line_index, name_line) in name_lines.iter().enumerate() {
+        let is_last_line = line_index == name_lines.len() - 1;
+        let cells = if is_last_line {
+            [
+                row.index.as_str(),
+                name_line.as_str(),
+                row.size.as_str(),
+                row.modified.as_str(),
+            ]
+        } else {
+            ["", name_line.as_str(), "", ""]
+        };
+
+        push_compact_row(output, &cells, widths, style, row_style);
+    }
+}
+
+fn render_ascii_narrow(rows: &[DisplayRow], config: &DisplayConfig) -> String {
+    let mut widths = [
         column_width("#", rows.iter().map(|row| row.index.as_str())),
         column_width("Name", rows.iter().map(|row| row.name.as_str())),
         column_width("Size", rows.iter().map(|row| row.size.as_str())),
     ];
+
+    if config.folder_wrap {
+        widths[1] =
+            capped_ascii_name_width(config.terminal_width, widths[1], &[widths[0], widths[2]], 6);
+    }
 
     let mut output = String::new();
 
@@ -559,9 +744,9 @@ fn render_ascii_narrow(rows: &[DisplayRow], style: &Style) -> String {
     ];
     output.push_str(&format!(
         "{}   {}   {}\n",
-        style.yellow(&header[0]),
-        style.yellow(&header[1]),
-        style.yellow(&header[2])
+        config.style.cyan(&header[0]),
+        config.style.cyan(&header[1]),
+        config.style.cyan(&header[2])
     ));
     output.push_str(&format!(
         "{}   {}   {}\n",
@@ -571,44 +756,121 @@ fn render_ascii_narrow(rows: &[DisplayRow], style: &Style) -> String {
     ));
 
     for row in rows {
-        let index = aligned_cell(&row.index, widths[0], Alignment::Right);
-        let name = aligned_cell(&row.name, widths[1], Alignment::Left);
-        let size = aligned_cell(&row.size, widths[2], Alignment::Right);
-        let row_style = RowStyle::Data {
-            problem: row.problem,
-        };
-
-        output.push_str(&format!(
-            "{}   {}   {}\n",
-            style_unicode_cell(&index, 0, style, row_style),
-            style_unicode_cell(&name, 1, style, row_style),
-            style_unicode_cell(&size, 2, style, row_style)
-        ));
+        if config.folder_wrap {
+            push_wrapped_narrow_row(&mut output, row, &widths, &config.style);
+        } else {
+            push_narrow_row(&mut output, row, &row.name, &widths, &config.style, true);
+        }
     }
 
     trim_final_newline(output)
 }
 
-fn render_ascii_minimal(rows: &[DisplayRow]) -> String {
-    if rows.is_empty() {
-        return String::new();
-    }
+fn push_narrow_row(
+    output: &mut String,
+    row: &DisplayRow,
+    name: &str,
+    widths: &[usize; 3],
+    style: &Style,
+    include_metadata: bool,
+) {
+    let index_value = if include_metadata {
+        row.index.as_str()
+    } else {
+        ""
+    };
+    let size_value = if include_metadata {
+        row.size.as_str()
+    } else {
+        ""
+    };
+    let index = aligned_cell(index_value, widths[0], Alignment::Right);
+    let name = aligned_cell(name, widths[1], Alignment::Left);
+    let size = aligned_cell(size_value, widths[2], Alignment::Right);
+    let row_style = RowStyle::Data {
+        problem: row.problem,
+    };
 
-    let index_width = rows.iter().map(|row| row.index.len()).max().unwrap_or(1);
-    let name_width = rows.iter().map(|row| row.name.len()).max().unwrap_or(1);
+    output.push_str(&format!(
+        "{}   {}   {}\n",
+        style_unicode_cell(&index, 0, style, row_style),
+        style_unicode_cell(&name, 1, style, row_style),
+        style_unicode_cell(&size, 2, style, row_style)
+    ));
+}
+
+fn push_wrapped_narrow_row(
+    output: &mut String,
+    row: &DisplayRow,
+    widths: &[usize; 3],
+    style: &Style,
+) {
+    let name_lines = wrap_path_by_folder(&row.name, widths[1]);
+
+    for (line_index, name_line) in name_lines.iter().enumerate() {
+        let is_last_line = line_index == name_lines.len() - 1;
+        push_narrow_row(output, row, name_line, widths, style, is_last_line);
+    }
+}
+
+fn render_ascii_minimal(rows: &[DisplayRow], config: &DisplayConfig) -> String {
+    let index_width = rows
+        .iter()
+        .map(|row| row.index.len())
+        .max()
+        .unwrap_or(1)
+        .max("#".len());
+    let mut name_width = rows
+        .iter()
+        .map(|row| row.name.len())
+        .max()
+        .unwrap_or("Name".len())
+        .max("Name".len());
     let size_width = rows
         .iter()
         .map(|row| row.minimal_size.len())
         .max()
-        .unwrap_or(1);
+        .unwrap_or("Size".len())
+        .max("Size".len());
+
+    if config.folder_wrap {
+        name_width = capped_ascii_name_width(
+            config.terminal_width,
+            name_width,
+            &[index_width, size_width],
+            4,
+        );
+    }
 
     let mut output = String::new();
+    output.push_str(&format!(
+        "{:<index_width$}  {:<name_width$}  {:>size_width$}\n",
+        "#", "Name", "Size",
+    ));
 
     for row in rows {
-        output.push_str(&format!(
-            "{:<index_width$}  {:<name_width$}  {:>size_width$}\n",
-            row.index, row.name, row.minimal_size,
-        ));
+        if config.folder_wrap {
+            let name_lines = wrap_path_by_folder(&row.name, name_width);
+
+            for (line_index, name_line) in name_lines.iter().enumerate() {
+                let is_last_line = line_index == name_lines.len() - 1;
+                let index = if is_last_line { row.index.as_str() } else { "" };
+                let size = if is_last_line {
+                    row.minimal_size.as_str()
+                } else {
+                    ""
+                };
+                output.push_str(&format!(
+                    "{:<index_width$}  {:<name_width$}  {:>size_width$}\n",
+                    index, name_line, size,
+                ));
+            }
+        } else {
+            output.push_str(&format!(
+                "{:<index_width$}  {:<name_width$}  {:>size_width$}\n",
+                row.index, row.name, row.minimal_size,
+            ));
+        }
     }
 
     trim_final_newline(output)
@@ -699,6 +961,28 @@ mod tests {
         SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000)
     }
 
+    fn ascii_config(ascii_format: AsciiFormat) -> DisplayConfig {
+        DisplayConfig {
+            style: crate::terminal::Style::plain(),
+            use_unicode: false,
+            ascii_format,
+            terminal_width: Some(120),
+            long_paths: false,
+            folder_wrap: false,
+        }
+    }
+
+    fn wrapped_ascii_config(ascii_format: AsciiFormat, terminal_width: usize) -> DisplayConfig {
+        DisplayConfig {
+            style: crate::terminal::Style::plain(),
+            use_unicode: false,
+            ascii_format,
+            terminal_width: Some(terminal_width),
+            long_paths: false,
+            folder_wrap: true,
+        }
+    }
+
     #[test]
     fn ascii_format_forces_ascii_rendering() {
         let config = DisplayConfig::from_capabilities(
@@ -710,6 +994,7 @@ mod tests {
                 use_colors: false,
             },
             Some(AsciiFormat::Narrow),
+            false,
             false,
             false,
         );
@@ -734,6 +1019,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
 
         assert!(config.use_unicode);
@@ -751,6 +1037,7 @@ mod tests {
             },
             None,
             true,
+            false,
             false,
         );
 
@@ -771,6 +1058,7 @@ mod tests {
             None,
             false,
             false,
+            false,
         );
 
         assert_eq!(config.ascii_format, AsciiFormat::Compact);
@@ -787,6 +1075,7 @@ mod tests {
                 use_colors: false,
             },
             None,
+            false,
             false,
             false,
         );
@@ -812,7 +1101,7 @@ mod tests {
                 use_colors: false,
             },
         ] {
-            let config = DisplayConfig::from_capabilities(caps, None, false, false);
+            let config = DisplayConfig::from_capabilities(caps, None, false, false, false);
 
             assert_eq!(config.ascii_format, AsciiFormat::Minimal);
         }
@@ -829,7 +1118,7 @@ mod tests {
     #[test]
     fn compact_has_expected_columns_and_exact_output() {
         let rows = collect_display_rows(&fixture_entries(), fixture_now());
-        let output = render_ascii_compact(&rows, &crate::terminal::Style::plain());
+        let output = render_ascii_compact(&rows, &ascii_config(AsciiFormat::Compact));
 
         assert!(output.contains("|  # | Name"));
         assert!(output.contains("| Size    | Modified  |"));
@@ -851,7 +1140,7 @@ mod tests {
     #[test]
     fn narrow_has_expected_columns_and_exact_output() {
         let rows = collect_display_rows(&fixture_entries(), fixture_now());
-        let output = render_ascii_narrow(&rows, &crate::terminal::Style::plain());
+        let output = render_ascii_narrow(&rows, &ascii_config(AsciiFormat::Narrow));
 
         assert!(output.starts_with(" #   Name"));
         assert!(!output.contains("Modified"));
@@ -870,16 +1159,16 @@ mod tests {
     }
 
     #[test]
-    fn minimal_has_no_headers_or_borders_and_exact_output() {
+    fn minimal_has_headers_but_no_borders_and_exact_output() {
         let rows = collect_display_rows(&fixture_entries(), fixture_now());
-        let output = render_ascii_minimal(&rows);
+        let output = render_ascii_minimal(&rows, &ascii_config(AsciiFormat::Minimal));
 
-        assert!(!output.contains("Name"));
         assert!(!output.contains('|'));
         assert!(!output.contains('+'));
         assert_eq!(
             output,
-            "0   AGENTS.md                                        764B\n\
+            "#   Name                                             Size\n\
+0   AGENTS.md                                        764B\n\
 1   CHANGELOG.md                                    1.0kB\n\
 2   assets/                                           96B\n\
 10  a-very-long-file-name-that-must-not-break.txt  62.0kB"
@@ -891,7 +1180,7 @@ mod tests {
         let rows = collect_display_rows(&[], fixture_now());
 
         assert_eq!(
-            render_ascii_compact(&rows, &crate::terminal::Style::plain()),
+            render_ascii_compact(&rows, &ascii_config(AsciiFormat::Compact)),
             "\
 +----+------+------+----------+
 |  # | Name | Size | Modified |
@@ -899,12 +1188,15 @@ mod tests {
 +----+------+------+----------+"
         );
         assert_eq!(
-            render_ascii_narrow(&rows, &crate::terminal::Style::plain()),
+            render_ascii_narrow(&rows, &ascii_config(AsciiFormat::Narrow)),
             "\
 #   Name   Size
 -   ----   ----"
         );
-        assert_eq!(render_ascii_minimal(&rows), "");
+        assert_eq!(
+            render_ascii_minimal(&rows, &ascii_config(AsciiFormat::Minimal)),
+            "#  Name  Size"
+        );
     }
 
     #[test]
@@ -934,6 +1226,7 @@ mod tests {
             ascii_format: AsciiFormat::Compact,
             terminal_width: Some(120),
             long_paths: false,
+            folder_wrap: false,
         };
         let output = render_table(&entries, &config);
 
@@ -951,6 +1244,7 @@ mod tests {
             ascii_format: AsciiFormat::Compact,
             terminal_width: Some(120),
             long_paths: true,
+            folder_wrap: false,
         };
         let output = render_table(&entries, &config);
 
@@ -968,11 +1262,127 @@ mod tests {
             ascii_format: AsciiFormat::Compact,
             terminal_width: Some(240),
             long_paths: false,
+            folder_wrap: false,
         };
         let output = render_table(&entries, &config);
 
         assert!(output.contains(long_path));
         assert!(!output.contains('…'));
+    }
+
+    #[test]
+    fn folder_wrap_splits_paths_at_folder_boundaries() {
+        assert_eq!(
+            super::wrap_path_by_folder("/alpha/beta/gamma", 12),
+            vec!["/alpha/beta/".to_string(), "gamma".to_string(),]
+        );
+    }
+
+    #[test]
+    fn folder_wrap_keeps_row_metadata_on_last_physical_line() {
+        let path = "/alpha/beta/gamma/delta";
+        let entries = vec![entry(7, path, EntryType::Directory, 1024)];
+        let config = DisplayConfig {
+            style: crate::terminal::Style::plain(),
+            use_unicode: true,
+            ascii_format: AsciiFormat::Compact,
+            terminal_width: Some(72),
+            long_paths: false,
+            folder_wrap: true,
+        };
+        let output = render_table(&entries, &config);
+        let data_lines = output
+            .lines()
+            .filter(|line| line.starts_with('│') && !line.contains("PATH"))
+            .collect::<Vec<_>>();
+
+        assert!(data_lines.len() > 1);
+        assert!(!data_lines[0].contains("  7 "));
+        assert!(!data_lines[0].contains(" dir "));
+        assert!(data_lines.last().expect("last data line").contains(" 7 "));
+        assert!(data_lines.last().expect("last data line").contains(" dir "));
+        assert!(!output.contains('…'));
+    }
+
+    #[test]
+    fn ascii_folder_wrap_keeps_metadata_on_last_physical_line() {
+        let rows = collect_display_rows(
+            &[entry(
+                7,
+                "/alpha/beta/gamma/delta",
+                EntryType::Directory,
+                1024,
+            )],
+            fixture_now(),
+        );
+        let output = render_ascii_narrow(&rows, &wrapped_ascii_config(AsciiFormat::Narrow, 28));
+        let lines = output.lines().collect::<Vec<_>>();
+
+        assert!(lines.len() > 3);
+        assert!(!lines[2].contains("7"));
+        assert!(lines.last().expect("last line").contains("7"));
+        assert!(lines.last().expect("last line").contains("1.0 kB"));
+    }
+
+    #[test]
+    fn compact_folder_wrap_keeps_table_structure_and_last_line_metadata() {
+        let rows = collect_display_rows(
+            &[entry(
+                7,
+                "/alpha/beta/gamma/delta",
+                EntryType::Directory,
+                1024,
+            )],
+            fixture_now(),
+        );
+        let output = render_ascii_compact(&rows, &wrapped_ascii_config(AsciiFormat::Compact, 42));
+        let lines = output.lines().collect::<Vec<_>>();
+
+        assert!(
+            lines
+                .iter()
+                .all(|line| line.starts_with('+') || line.starts_with('|'))
+        );
+        assert!(lines.len() > 5);
+        assert!(!lines[3].contains("7"));
+        assert!(lines[4].contains("7"));
+        assert!(lines[4].contains("1.0 kB"));
+    }
+
+    #[test]
+    fn ascii_long_paths_keep_full_name_without_wrapping() {
+        let long_path = "/alpha/beta/gamma/delta/epsilon/zeta";
+        let rows = collect_display_rows(
+            &[entry(7, long_path, EntryType::Directory, 1024)],
+            fixture_now(),
+        );
+        let mut config = ascii_config(AsciiFormat::Narrow);
+        config.terminal_width = Some(24);
+        config.long_paths = true;
+        let output = render_ascii_narrow(&rows, &config);
+
+        assert!(output.contains("/alpha/beta/gamma/delta/epsilon/zeta/"));
+        assert!(!output.contains('…'));
+    }
+
+    #[test]
+    fn minimal_folder_wrap_has_headers_and_last_line_metadata() {
+        let rows = collect_display_rows(
+            &[entry(
+                7,
+                "/alpha/beta/gamma/delta",
+                EntryType::Directory,
+                1024,
+            )],
+            fixture_now(),
+        );
+        let output = render_ascii_minimal(&rows, &wrapped_ascii_config(AsciiFormat::Minimal, 28));
+        let lines = output.lines().collect::<Vec<_>>();
+
+        assert!(lines[0].contains("Name"));
+        assert!(!lines[1].contains("7"));
+        assert!(lines.last().expect("last line").contains("7"));
+        assert!(lines.last().expect("last line").contains("1.0kB"));
     }
 
     #[test]
@@ -1027,6 +1437,7 @@ mod tests {
             ascii_format: AsciiFormat::Compact,
             terminal_width: Some(120),
             long_paths: false,
+            folder_wrap: false,
         };
         let output = render_table(&[ok, problem], &config);
 

@@ -20,6 +20,9 @@ struct Cli {
 
     #[arg(long)]
     long: bool,
+
+    #[arg(long)]
+    folder_wrap: bool,
 }
 
 fn main() {
@@ -27,7 +30,8 @@ fn main() {
 
     let entries = path::read_path();
 
-    let config = display::DisplayConfig::new(cli.ascii_format, cli.monochrome, cli.long);
+    let config =
+        display::DisplayConfig::new(cli.ascii_format, cli.monochrome, cli.long, cli.folder_wrap);
 
     display::print_table(&entries, &config);
     if config.should_print_summary() {
@@ -91,5 +95,12 @@ mod tests {
         let cli = Cli::try_parse_from(["pathy", "--long"]).unwrap();
 
         assert!(cli.long);
+    }
+
+    #[test]
+    fn accepts_folder_wrap_flag() {
+        let cli = Cli::try_parse_from(["pathy", "--folder-wrap"]).unwrap();
+
+        assert!(cli.folder_wrap);
     }
 }
