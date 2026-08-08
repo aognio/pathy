@@ -1,0 +1,18 @@
+[package]
+name = "pathy"
+version = "0.1.0"
+edition = "2024"
+description = "A modern, visual CLI for exploring and editing PATH."
+license = "MIT"
+repository = "https://github.com/aognio/pathy"
+homepage = "https://github.com/aognio/pathy"
+documentation = "https://github.com/aognio/pathy#readme"
+readme = "README.md"
+keywords = ["cli", "path", "terminal", "shell"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["assets/images/*.png", "assets/images/optimized/*"]
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+is-terminal = "0.1"
+terminal_size = "0.4.4"
