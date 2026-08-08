@@ -13,5 +13,7 @@ categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
+crossterm = "0.29.0"
 is-terminal = "0.1"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 terminal_size = "0.4.4"

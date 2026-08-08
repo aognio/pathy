@@ -32,6 +32,7 @@ pathy --ascii-format compact
 pathy --ascii-format narrow
 pathy --ascii-format minimal
 pathy --monochrome
+pathy --tui
 ```
 
 ## Goals

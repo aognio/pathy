@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+#[derive(Clone, Debug)]
 pub struct PathEntry {
     pub index: usize,
     pub path: PathBuf,
@@ -44,47 +45,50 @@ pub fn read_path() -> Vec<PathEntry> {
     let mut entries = Vec::new();
 
     for (index, path) in paths.enumerate() {
-        let metadata = fs::metadata(&path).ok();
-        let exists = metadata.is_some();
-        let entry_type = metadata
-            .as_ref()
-            .map(entry_type_from_metadata)
-            .unwrap_or(EntryType::Missing);
-        let modified = metadata
-            .as_ref()
-            .and_then(|metadata| metadata.modified().ok());
-
-        let file_counts = if matches!(entry_type, EntryType::Directory) {
-            count_directory_files(&path)
-        } else {
-            FileCounts::default()
-        };
-
-        let size_bytes = if matches!(entry_type, EntryType::Directory) {
-            directory_size(&path)
-        } else {
-            metadata
-                .as_ref()
-                .map(|metadata| metadata.len())
-                .unwrap_or(0)
-        };
-
         let duplicate = entries.iter().any(|entry: &PathEntry| entry.path == path);
-
-        entries.push(PathEntry {
-            index: index + 1,
-            path,
-            entry_type,
-            exists,
-            executable_count: file_counts.executable,
-            non_executable_count: file_counts.non_executable,
-            size_bytes,
-            duplicate,
-            modified,
-        });
+        entries.push(inspect_path(index + 1, path, duplicate));
     }
 
     entries
+}
+
+pub fn inspect_path(index: usize, path: PathBuf, duplicate: bool) -> PathEntry {
+    let metadata = fs::metadata(&path).ok();
+    let exists = metadata.is_some();
+    let entry_type = metadata
+        .as_ref()
+        .map(entry_type_from_metadata)
+        .unwrap_or(EntryType::Missing);
+    let modified = metadata
+        .as_ref()
+        .and_then(|metadata| metadata.modified().ok());
+
+    let file_counts = if matches!(entry_type, EntryType::Directory) {
+        count_directory_files(&path)
+    } else {
+        FileCounts::default()
+    };
+
+    let size_bytes = if matches!(entry_type, EntryType::Directory) {
+        directory_size(&path)
+    } else {
+        metadata
+            .as_ref()
+            .map(|metadata| metadata.len())
+            .unwrap_or(0)
+    };
+
+    PathEntry {
+        index,
+        path,
+        entry_type,
+        exists,
+        executable_count: file_counts.executable,
+        non_executable_count: file_counts.non_executable,
+        size_bytes,
+        duplicate,
+        modified,
+    }
 }
 
 fn entry_type_from_metadata(metadata: &fs::Metadata) -> EntryType {

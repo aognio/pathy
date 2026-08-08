@@ -1,6 +1,7 @@
 mod display;
 mod path;
 mod terminal;
+mod tui;
 
 use clap::Parser;
 use display::AsciiFormat;
@@ -23,12 +24,19 @@ struct Cli {
 
     #[arg(long)]
     folder_wrap: bool,
+
+    #[arg(long)]
+    tui: bool,
 }
 
-fn main() {
+fn main() -> std::io::Result<()> {
     let cli = Cli::parse();
 
     let entries = path::read_path();
+
+    if cli.tui {
+        return tui::run(entries);
+    }
 
     let config =
         display::DisplayConfig::new(cli.ascii_format, cli.monochrome, cli.long, cli.folder_wrap);
@@ -37,6 +45,8 @@ fn main() {
     if config.should_print_summary() {
         display::print_summary(&entries, &config);
     }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -102,5 +112,12 @@ mod tests {
         let cli = Cli::try_parse_from(["pathy", "--folder-wrap"]).unwrap();
 
         assert!(cli.folder_wrap);
+    }
+
+    #[test]
+    fn accepts_tui_flag() {
+        let cli = Cli::try_parse_from(["pathy", "--tui"]).unwrap();
+
+        assert!(cli.tui);
     }
 }
