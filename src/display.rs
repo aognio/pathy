@@ -238,9 +238,7 @@ fn unicode_column_widths(
     }
 
     if !long_paths {
-        let target_width = terminal_width
-            .unwrap_or(MAX_UNICODE_TABLE_WIDTH)
-            .min(MAX_UNICODE_TABLE_WIDTH);
+        let target_width = terminal_width.unwrap_or(MAX_UNICODE_TABLE_WIDTH);
         let table_width = unicode_table_width(&widths);
 
         if table_width > target_width && widths[2] > MIN_PATH_WIDTH {
@@ -953,6 +951,23 @@ mod tests {
             ascii_format: AsciiFormat::Compact,
             terminal_width: Some(120),
             long_paths: true,
+        };
+        let output = render_table(&entries, &config);
+
+        assert!(output.contains(long_path));
+        assert!(!output.contains('…'));
+    }
+
+    #[test]
+    fn wide_detected_terminal_avoids_default_truncation() {
+        let long_path = "/this/is/a/very/long/path/that/would/otherwise/stretch/the/table/far/past/a/readable/terminal/width/bin";
+        let entries = vec![entry(123, long_path, EntryType::Directory, 1024 * 1024)];
+        let config = DisplayConfig {
+            style: crate::terminal::Style::plain(),
+            use_unicode: true,
+            ascii_format: AsciiFormat::Compact,
+            terminal_width: Some(240),
+            long_paths: false,
         };
         let output = render_table(&entries, &config);
 
