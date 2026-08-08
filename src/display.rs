@@ -31,19 +31,21 @@ pub struct DisplayConfig {
     pub use_unicode: bool,
     pub ascii_format: AsciiFormat,
     pub terminal_width: Option<usize>,
+    pub long_paths: bool,
 }
 
 impl DisplayConfig {
-    pub fn new(ascii_format: Option<AsciiFormat>, monochrome: bool) -> Self {
+    pub fn new(ascii_format: Option<AsciiFormat>, monochrome: bool, long_paths: bool) -> Self {
         let caps = TerminalCapabilities::detect();
 
-        Self::from_capabilities(caps, ascii_format, monochrome)
+        Self::from_capabilities(caps, ascii_format, monochrome, long_paths)
     }
 
     fn from_capabilities(
         caps: TerminalCapabilities,
         ascii_format: Option<AsciiFormat>,
         monochrome: bool,
+        long_paths: bool,
     ) -> Self {
         let force_ascii = ascii_format.is_some();
         let ascii_format = ascii_format.unwrap_or_else(|| auto_ascii_format(&caps));
@@ -63,6 +65,7 @@ impl DisplayConfig {
             use_unicode,
             ascii_format,
             terminal_width: caps.width.map(usize::from),
+            long_paths,
         }
     }
 
@@ -77,6 +80,7 @@ impl DisplayConfig {
             use_unicode: true,
             ascii_format: AsciiFormat::Compact,
             terminal_width: Some(120),
+            long_paths: false,
         }
     }
 
@@ -87,6 +91,7 @@ impl DisplayConfig {
             use_unicode: false,
             ascii_format,
             terminal_width: Some(120),
+            long_paths: false,
         }
     }
 }
@@ -105,7 +110,7 @@ fn auto_ascii_format(caps: &TerminalCapabilities) -> AsciiFormat {
 
 impl Default for DisplayConfig {
     fn default() -> Self {
-        Self::new(None, false)
+        Self::new(None, false, false)
     }
 }
 
@@ -133,11 +138,13 @@ pub fn render_table(entries: &[PathEntry], config: &DisplayConfig) -> String {
 
 fn render_unicode_table(entries: &[PathEntry], config: &DisplayConfig) -> String {
     let rows = collect_unicode_rows(entries);
-    let widths = unicode_column_widths(&rows, config.terminal_width);
+    let widths = unicode_column_widths(&rows, config.terminal_width, config.long_paths);
     let rows = rows
         .into_iter()
         .map(|mut row| {
-            row.path = truncate_to_width(&row.path, widths[2]);
+            if !config.long_paths {
+                row.path = truncate_to_width(&row.path, widths[2]);
+            }
             row
         })
         .collect::<Vec<_>>();
@@ -217,7 +224,11 @@ fn collect_unicode_rows(entries: &[PathEntry]) -> Vec<UnicodeRow> {
         .collect()
 }
 
-fn unicode_column_widths(rows: &[UnicodeRow], terminal_width: Option<usize>) -> [usize; 9] {
+fn unicode_column_widths(
+    rows: &[UnicodeRow],
+    terminal_width: Option<usize>,
+    long_paths: bool,
+) -> [usize; 9] {
     let mut widths = std::array::from_fn(|index| UNICODE_COLUMNS[index].header.chars().count());
 
     for row in rows {
@@ -226,14 +237,16 @@ fn unicode_column_widths(rows: &[UnicodeRow], terminal_width: Option<usize>) -> 
         }
     }
 
-    let target_width = terminal_width
-        .unwrap_or(MAX_UNICODE_TABLE_WIDTH)
-        .min(MAX_UNICODE_TABLE_WIDTH);
-    let table_width = unicode_table_width(&widths);
+    if !long_paths {
+        let target_width = terminal_width
+            .unwrap_or(MAX_UNICODE_TABLE_WIDTH)
+            .min(MAX_UNICODE_TABLE_WIDTH);
+        let table_width = unicode_table_width(&widths);
 
-    if table_width > target_width && widths[2] > MIN_PATH_WIDTH {
-        let excess = table_width - target_width;
-        widths[2] = widths[2].saturating_sub(excess).max(MIN_PATH_WIDTH);
+        if table_width > target_width && widths[2] > MIN_PATH_WIDTH {
+            let excess = table_width - target_width;
+            widths[2] = widths[2].saturating_sub(excess).max(MIN_PATH_WIDTH);
+        }
     }
 
     widths
@@ -700,6 +713,7 @@ mod tests {
             },
             Some(AsciiFormat::Narrow),
             false,
+            false,
         );
 
         let output = render_table(&fixture_entries(), &config);
@@ -721,6 +735,7 @@ mod tests {
             },
             None,
             false,
+            false,
         );
 
         assert!(config.use_unicode);
@@ -738,6 +753,7 @@ mod tests {
             },
             None,
             true,
+            false,
         );
 
         assert!(config.use_unicode);
@@ -756,6 +772,7 @@ mod tests {
             },
             None,
             false,
+            false,
         );
 
         assert_eq!(config.ascii_format, AsciiFormat::Compact);
@@ -772,6 +789,7 @@ mod tests {
                 use_colors: false,
             },
             None,
+            false,
             false,
         );
 
@@ -796,7 +814,7 @@ mod tests {
                 use_colors: false,
             },
         ] {
-            let config = DisplayConfig::from_capabilities(caps, None, false);
+            let config = DisplayConfig::from_capabilities(caps, None, false, false);
 
             assert_eq!(config.ascii_format, AsciiFormat::Minimal);
         }
@@ -917,11 +935,29 @@ mod tests {
             use_unicode: true,
             ascii_format: AsciiFormat::Compact,
             terminal_width: Some(120),
+            long_paths: false,
         };
         let output = render_table(&entries, &config);
 
         assert!(output.contains('…'));
         assert!(output.lines().all(|line| line.chars().count() <= 120));
+    }
+
+    #[test]
+    fn long_paths_disable_unicode_path_truncation() {
+        let long_path = "/this/is/a/very/long/path/that/would/otherwise/stretch/the/table/far/past/a/readable/terminal/width/bin";
+        let entries = vec![entry(123, long_path, EntryType::Directory, 1024 * 1024)];
+        let config = DisplayConfig {
+            style: crate::terminal::Style::plain(),
+            use_unicode: true,
+            ascii_format: AsciiFormat::Compact,
+            terminal_width: Some(120),
+            long_paths: true,
+        };
+        let output = render_table(&entries, &config);
+
+        assert!(output.contains(long_path));
+        assert!(!output.contains('…'));
     }
 
     #[test]
@@ -975,6 +1011,7 @@ mod tests {
             use_unicode: true,
             ascii_format: AsciiFormat::Compact,
             terminal_width: Some(120),
+            long_paths: false,
         };
         let output = render_table(&[ok, problem], &config);
 

@@ -17,6 +17,9 @@ struct Cli {
 
     #[arg(long)]
     monochrome: bool,
+
+    #[arg(long)]
+    long: bool,
 }
 
 fn main() {
@@ -24,7 +27,7 @@ fn main() {
 
     let entries = path::read_path();
 
-    let config = display::DisplayConfig::new(cli.ascii_format, cli.monochrome);
+    let config = display::DisplayConfig::new(cli.ascii_format, cli.monochrome, cli.long);
 
     display::print_table(&entries, &config);
     if config.should_print_summary() {
@@ -81,5 +84,12 @@ mod tests {
         let cli = Cli::try_parse_from(["pathy", "--monochrome"]).unwrap();
 
         assert!(cli.monochrome);
+    }
+
+    #[test]
+    fn accepts_long_flag() {
+        let cli = Cli::try_parse_from(["pathy", "--long"]).unwrap();
+
+        assert!(cli.long);
     }
 }
